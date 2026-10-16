@@ -23,7 +23,7 @@ android {
 }
 
 dependencies {
-    implementation("org.webrtc:google-webrtc:1.0.32006")
+    implementation("io.github.webrtc-sdk:android:150.7871.01")
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("androidx.core:core-ktx:1.15.0")

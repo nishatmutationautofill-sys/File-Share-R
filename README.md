@@ -10,9 +10,8 @@ Android-only Kotlin starter project with two peer-to-peer transfer modes.
 
 ## Mode 2: WebRTC DataChannel (same Wi-Fi)
 - Intended for two phones connected to the same local Wi-Fi network.
-- Sender chooses a file and displays an SDP Offer QR; receiver scans it and displays an SDP Answer QR; sender scans the answer.
-- After the answer is scanned and the WebRTC DataChannel opens, file sending starts automatically—no extra Send button is needed.
-- QR-only signaling is retained; no local or remote signaling server is added.
+- Sender creates an SDP Offer QR; receiver scans it and displays an SDP Answer QR; sender scans the answer.
+- Once the WebRTC DataChannel is open, files are sent directly as binary chunks.
 - No file-upload server or cloud signaling is used. No STUN/TURN server is configured; this mode relies on reachable local ICE host candidates.
 - SDP payloads can be too large for QR codes, and some devices/networks may not establish a connection. This mode is experimental; use Wi-Fi Direct if it fails.
 
@@ -39,9 +38,13 @@ Android-only Kotlin starter project with two peer-to-peer transfer modes.
 - Android manufacturers and OS versions differ. Wi-Fi Direct support is device-dependent.
 - This starter has not been compiled or tested on physical devices in this environment. Build with Android Studio or GitHub Actions and test on two real phones.
 - The receiver temporarily stores incoming files in app cache before the user chooses a destination. Very large transfers require sufficient free storage.
-- Wi-Fi Direct mode has no resume/retry, checksum, pairing authentication, or additional application-layer encryption. WebRTC QR mode is experimental and QR payloads may be too large. QR-only signaling requires scanning the Offer and then the Answer; a single QR cannot complete the two-way WebRTC handshake without another return path.
+- Wi-Fi Direct mode has no resume/retry, checksum, pairing authentication, or additional application-layer encryption. WebRTC QR mode is experimental and QR payloads may be too large.
 - No fixed app-level file-size cap is set in Wi-Fi Direct mode, but actual limits are available storage, OS/provider behavior, and connection stability. WebRTC DataChannel may have message/buffer limits depending on the WebRTC build and device.
 - Preserve Bengali source text as UTF-8/Unicode.
 
 ## Build
 Open in Android Studio with JDK 17 and Android SDK 35, then build `app` > `assembleDebug`. GitHub Actions workflow uploads a debug APK artifact.
+
+
+## Build dependency note
+- WebRTC dependency uses `io.github.webrtc-sdk:android:150.7871.01`, which is published on Maven Central; the old `org.webrtc:google-webrtc:1.0.32006` coordinate was hosted on a retired Bintray repository and fails to resolve from Google Maven/Maven Central.
