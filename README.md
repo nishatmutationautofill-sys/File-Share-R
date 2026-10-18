@@ -1,10 +1,11 @@
 # Rishat File Share — Wi-Fi Direct + same-Wi-Fi WebRTC
 
-Android-only Kotlin starter project with two peer-to-peer transfer modes.
+Android-only Kotlin project with a minimal futuristic UI and two peer-to-peer transfer modes.
 
 ## Mode 1: Wi-Fi Direct (offline)
 - Android Wi-Fi Direct peer discovery and connection.
 - Direct TCP socket between phones; file data streams in 64 KiB blocks.
+- The client retries the local TCP connection for up to about 30 seconds, with TCP keep-alive and no-delay enabled.
 - Does not require a router or internet connection.
 - No cloud upload, file server, STUN, TURN, or relay is used.
 
@@ -36,7 +37,8 @@ Android-only Kotlin starter project with two peer-to-peer transfer modes.
 - The app does not use a remote file server for either mode.
 - Wi-Fi Direct does not require internet. WebRTC mode is intended for the same Wi-Fi and depends on local host ICE candidates.
 - Android manufacturers and OS versions differ. Wi-Fi Direct support is device-dependent.
-- This starter has not been compiled or tested on physical devices in this environment. Build with Android Studio or GitHub Actions and test on two real phones.
+- This project has not been compiled or tested on physical devices in this environment. Build with Android Studio or GitHub Actions and test on two real phones.
+- No app can guarantee that every P2P connection succeeds on every phone/network: Wi-Fi Direct support, Android permission settings, manufacturer behavior, radio interference, and OS restrictions can still prevent connection. If a connection fails, keep Wi-Fi enabled on both phones, keep the app open, disconnect, and rediscover devices.
 - The receiver temporarily stores incoming files in app cache before the user chooses a destination. Very large transfers require sufficient free storage.
 - Wi-Fi Direct mode has no resume/retry, checksum, pairing authentication, or additional application-layer encryption. WebRTC QR mode is experimental and QR payloads may be too large.
 - No fixed app-level file-size cap is set in Wi-Fi Direct mode, but actual limits are available storage, OS/provider behavior, and connection stability. WebRTC DataChannel may have message/buffer limits depending on the WebRTC build and device.

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
@@ -87,7 +88,7 @@ class WebRtcActivity : AppCompatActivity() {
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(22), dp(20), dp(24))
-            setBackgroundColor(Color.rgb(248, 250, 253))
+            setBackgroundColor(Color.rgb(243, 247, 252))
         }
         scroll.addView(root)
         setContentView(scroll)
@@ -132,6 +133,30 @@ class WebRtcActivity : AppCompatActivity() {
             setPadding(0, dp(18), 0, 0)
         }
         root.addView(note, lp(true, -2))
+        styleUi(root)
+    }
+
+    private fun styleUi(view: View) {
+        when (view) {
+            is Button -> {
+                view.background = GradientDrawable().apply {
+                    setColor(0xFFE5F7FF.toInt())
+                    setStroke(dp(1), 0xFF91DFF5.toInt())
+                    cornerRadius = dp(14).toFloat()
+                }
+                view.setTextColor(0xFF12304A.toInt())
+                view.textSize = 15f
+                view.setPadding(dp(16), dp(12), dp(16), dp(12))
+                view.minHeight = dp(48)
+                view.elevation = dp(1).toFloat()
+            }
+            is TextView -> if (view.text.toString() == "Rishat File Share") {
+                view.textSize = 28f
+                view.setTextColor(0xFF102A43.toInt())
+                view.typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
+            }
+            is LinearLayout -> for (i in 0 until view.childCount) styleUi(view.getChildAt(i))
+        }
     }
 
     private fun addButton(label: String, action: () -> Unit) {
@@ -180,7 +205,9 @@ class WebRtcActivity : AppCompatActivity() {
     }
 
     private fun createPeer(isSender: Boolean) {
-        val config = PeerConnection.RTCConfiguration(emptyList<IceServer>()).apply {
+        val config = PeerConnection.RTCConfiguration(
+            listOf(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer())
+        ).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             iceTransportsType = PeerConnection.IceTransportsType.ALL
         }

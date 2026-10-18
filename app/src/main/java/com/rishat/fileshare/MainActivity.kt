@@ -5,6 +5,8 @@ import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -17,6 +19,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.webkit.MimeTypeMap
 import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
@@ -73,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var isConnected = false
     private var serverSocket: ServerSocket? = null
     private val acceptStarted = AtomicBoolean(false)
+    private val connectAttempting = AtomicBoolean(false)
     private val receiverStarted = AtomicBoolean(false)
     private var pendingSaveFile: File? = null
     private val discoveredDevices = linkedMapOf<String, WifiP2pDevice>()
@@ -130,6 +134,7 @@ class MainActivity : AppCompatActivity() {
         manager = getSystemService(Context.WIFI_P2P_SERVICE) as WifiP2pManager
         channel = manager.initialize(this, mainLooper, null)
         buildUi()
+        restoreReceivedFiles()
         requestRequiredPermissions()
     }
 
@@ -138,7 +143,7 @@ class MainActivity : AppCompatActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(20), dp(18), dp(24))
-            setBackgroundColor(0xFFF7F9FC.toInt())
+            setBackgroundColor(0xFFF3F7FC.toInt())
         }
         scroll.addView(root)
         setContentView(scroll)
@@ -181,6 +186,12 @@ class MainActivity : AppCompatActivity() {
         root.addView(sendButton, matchWrap(bottom = 8))
 
         root.addView(Button(this).apply {
+            text = "অন্য ফোনে অ্যাপটি শেয়ার করুন (Bluetooth / Wi-Fi)"
+            isAllCaps = false
+            setOnClickListener { shareInstalledApk() }
+        }, matchWrap(bottom = 8))
+
+        root.addView(Button(this).apply {
             text = "একই Wi-Fi-তে WebRTC দিয়ে ফাইল পাঠান"
             isAllCaps = false
             setOnClickListener {
@@ -216,6 +227,64 @@ class MainActivity : AppCompatActivity() {
             setTextColor(0xFF5A6573.toInt())
             setPadding(0, dp(16), 0, 0)
         }, matchWrap())
+        styleUi(root)
+    }
+
+    /** Shares this installed app's APK using Android's standard share sheet.
+     * The recipient may need to allow installs from the app used to receive it.
+     */
+    private fun shareInstalledApk() {
+        try {
+            val sourceApk = File(applicationInfo.sourceDir)
+            if (!sourceApk.isFile || sourceApk.length() <= 0L) {
+                Toast.makeText(this, "অ্যাপের APK ফাইল পাওয়া যায়নি।", Toast.LENGTH_LONG).show()
+                return
+            }
+            val shareDir = File(cacheDir, "app-share").apply { mkdirs() }
+            val sharedApk = File(shareDir, "Rishat-File-Share.apk")
+            sourceApk.inputStream().use { input ->
+                sharedApk.outputStream().use { output -> input.copyTo(output) }
+            }
+            val apkUri = androidx.core.content.FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                sharedApk
+            )
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/vnd.android.package-archive"
+                putExtra(Intent.EXTRA_STREAM, apkUri)
+                clipData = android.content.ClipData.newUri(contentResolver, "Rishat File Share APK", apkUri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(sendIntent, "Bluetooth বা Wi-Fi দিয়ে অ্যাপ শেয়ার করুন"))
+        } catch (e: Exception) {
+            Toast.makeText(this, "অ্যাপ শেয়ার করা যায়নি: ${e.localizedMessage ?: "অজানা সমস্যা"}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun styleUi(view: android.view.View) {
+        when (view) {
+            is Button -> {
+                view.background = GradientDrawable().apply {
+                    setColor(0xFFE5F7FF.toInt())
+                    setStroke(dp(1), 0xFF91DFF5.toInt())
+                    cornerRadius = dp(14).toFloat()
+                }
+                view.setTextColor(0xFF12304A.toInt())
+                view.textSize = 15f
+                view.setPadding(dp(16), dp(12), dp(16), dp(12))
+                view.minHeight = dp(48)
+                view.elevation = dp(1).toFloat()
+            }
+            is TextView -> {
+                if (view.text.toString() == "Rishat File Share") {
+                    view.textSize = 28f
+                    view.setTextColor(0xFF102A43.toInt())
+                    view.typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD)
+                }
+            }
+            is LinearLayout -> for (i in 0 until view.childCount) styleUi(view.getChildAt(i))
+        }
     }
 
     private fun renderDevices() {
@@ -336,7 +405,9 @@ class MainActivity : AppCompatActivity() {
         if (!acceptStarted.compareAndSet(false, true)) return
         ioExecutor.execute {
             try {
-                val server = ServerSocket(SOCKET_PORT)
+                val server = ServerSocket()
+                server.reuseAddress = true
+                server.bind(InetSocketAddress(SOCKET_PORT), 1)
                 serverSocket = server
                 setStatus("Wi-Fi Direct গ্রুপ তৈরি। অন্য ফোনের ডেটা-লিংকের অপেক্ষায়…")
                 val client = server.accept()
@@ -349,22 +420,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectToOwner(host: String) {
-        if (isConnected) return
+        if (isConnected || !connectAttempting.compareAndSet(false, true)) return
         ioExecutor.execute {
             var lastError: Exception? = null
-            repeat(12) {
-                if (isConnected) return@execute
-                try {
-                    val client = Socket()
-                    client.connect(InetSocketAddress(host, SOCKET_PORT), 2500)
-                    installSocket(client)
-                    return@execute
-                } catch (e: Exception) {
-                    lastError = e
-                    try { Thread.sleep(500) } catch (_: InterruptedException) { return@execute }
+            try {
+                repeat(30) {
+                    if (isConnected || isFinishing) return@execute
+                    try {
+                        val client = Socket()
+                        client.tcpNoDelay = true
+                        client.keepAlive = true
+                        client.connect(InetSocketAddress(host, SOCKET_PORT), 4000)
+                        installSocket(client)
+                        return@execute
+                    } catch (e: Exception) {
+                        lastError = e
+                        try { Thread.sleep(750) } catch (_: InterruptedException) { return@execute }
+                    }
                 }
+                if (!isConnected && !isFinishing) setStatus("ডেটা সংযোগ এখনও তৈরি হয়নি: ${lastError?.message ?: "সময় শেষ"}। দুই ফোন কাছাকাছি রেখে আবার চেষ্টা করুন।")
+            } finally {
+                connectAttempting.set(false)
             }
-            setStatus("ডেটা সংযোগ তৈরি হয়নি: ${lastError?.message ?: "সময় শেষ"}। সংযোগ বিচ্ছিন্ন করে আবার চেষ্টা করুন।")
         }
     }
 
@@ -374,6 +451,8 @@ class MainActivity : AppCompatActivity() {
                 try { newSocket.close() } catch (_: Exception) {}
                 return
             }
+            newSocket.tcpNoDelay = true
+            newSocket.keepAlive = true
             socket = newSocket
             input = DataInputStream(BufferedInputStream(newSocket.getInputStream()))
             output = DataOutputStream(BufferedOutputStream(newSocket.getOutputStream()))
@@ -501,26 +580,111 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun addReceivedFile(name: String, file: File) {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(6), 0, dp(6)) }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                setStroke(dp(1), 0xFFD7E5F0.toInt())
+                cornerRadius = dp(16).toFloat()
+            }
+        }
+        val mime = mimeTypeFor(name)
+        val icon = when {
+            mime.startsWith("image/") -> "🖼️"
+            mime.startsWith("video/") -> "🎬"
+            mime.startsWith("audio/") -> "🎵"
+            mime == "application/pdf" -> "📕"
+            mime.startsWith("text/") -> "📝"
+            else -> "📄"
+        }
         row.addView(TextView(this).apply {
-            text = "$name (${formatSize(file.length())})"
-            textSize = 14f
-            setTextColor(0xFF243447.toInt())
+            text = "$icon  $name"
+            textSize = 15f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            setTextColor(0xFF12304A.toInt())
         }, matchWrap(bottom = 4))
-        row.addView(Button(this).apply {
-            text = "ফোনে সংরক্ষণ করুন"
+        row.addView(TextView(this).apply {
+            text = "${formatSize(file.length())}  •  ${mime.substringBefore(';')}"
+            textSize = 12f
+            setTextColor(0xFF687B8D.toInt())
+        }, matchWrap(bottom = 10))
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        actions.addView(Button(this).apply {
+            text = "খুলুন / Preview"
+            isAllCaps = false
+            setOnClickListener { openReceivedFile(name, file) }
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(4) })
+        actions.addView(Button(this).apply {
+            text = "শেয়ার"
+            isAllCaps = false
+            setOnClickListener { shareReceivedFile(name, file) }
+        }, LinearLayout.LayoutParams(0, -2, 0.65f).apply { marginEnd = dp(4) })
+        actions.addView(Button(this).apply {
+            text = "সংরক্ষণ"
             isAllCaps = false
             setOnClickListener {
                 pendingSaveFile = file
                 val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
+                    type = mimeTypeFor(name)
                     putExtra(Intent.EXTRA_TITLE, name)
                 }
                 startActivityForResult(intent, REQUEST_SAVE_FILE)
             }
-        }, matchWrap(bottom = 4))
-        receivedBox.addView(row, matchWrap(bottom = 4))
+        }, LinearLayout.LayoutParams(0, -2, 0.7f))
+        row.addView(actions, matchWrap())
+        receivedBox.addView(row, matchWrap(bottom = 8))
+    }
+
+    private fun restoreReceivedFiles() {
+        val files = cacheDir.listFiles { file -> file.isFile && file.name.startsWith("rfs_") }
+            ?.sortedByDescending { it.lastModified() }.orEmpty()
+        files.forEach { file ->
+            val first = file.name.indexOf('_')
+            val second = if (first >= 0) file.name.indexOf('_', first + 1) else -1
+            val displayName = if (second >= 0) file.name.substring(second + 1) else file.name
+            addReceivedFile(displayName, file)
+        }
+    }
+
+    private fun mimeTypeFor(name: String): String {
+        val extension = name.substringAfterLast('.', "").lowercase()
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "application/octet-stream"
+    }
+
+    private fun openReceivedFile(name: String, file: File) {
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeTypeFor(name))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "ফাইলটি কোন অ্যাপে খুলবেন?"))
+        } catch (_: android.content.ActivityNotFoundException) {
+            toast("এই ফাইল খোলার মতো অ্যাপ পাওয়া যায়নি। শেয়ার করে অন্য অ্যাপে খুলুন।")
+        } catch (e: Exception) {
+            toast("ফাইল খোলা যায়নি: ${e.localizedMessage ?: "অজানা সমস্যা"}")
+        }
+    }
+
+    private fun shareReceivedFile(name: String, file: File) {
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = mimeTypeFor(name)
+                putExtra(Intent.EXTRA_STREAM, uri)
+                clipData = android.content.ClipData.newUri(contentResolver, name, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "ফাইল শেয়ার করুন"))
+        } catch (e: Exception) {
+            toast("ফাইল শেয়ার করা যায়নি: ${e.localizedMessage ?: "অজানা সমস্যা"}")
+        }
     }
 
     private fun queryDisplayName(uri: Uri): String? {
@@ -540,6 +704,7 @@ class MainActivity : AppCompatActivity() {
         disconnectSocketOnly()
         acceptStarted.set(false)
         receiverStarted.set(false)
+        connectAttempting.set(false)
         setStatus("সংযোগ বিচ্ছিন্ন করা হয়েছে। আবার স্ক্যান করতে পারেন।")
     }
 
@@ -558,6 +723,7 @@ class MainActivity : AppCompatActivity() {
         serverSocket = null
         acceptStarted.set(false)
         receiverStarted.set(false)
+        connectAttempting.set(false)
     }
 
     private fun setStatus(message: String) {
