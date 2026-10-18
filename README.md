@@ -1,8 +1,8 @@
-# Rishat File Share — Wi-Fi Direct + same-Wi-Fi WebRTC
+# Rishat File Share — Wi-Fi Direct + WebRTC QR + Windows/Mobile LAN
 
 Android-only Kotlin project with a minimal futuristic UI and two peer-to-peer transfer modes.
 
-## Mode 1: Wi-Fi Direct (offline)
+## Mode 1: Wi-Fi Direct (Android-to-Android offline)
 - Android Wi-Fi Direct peer discovery and connection.
 - Direct TCP socket between phones; file data streams in 64 KiB blocks.
 - The client retries the local TCP connection for up to about 30 seconds, with TCP keep-alive and no-delay enabled.
@@ -33,11 +33,21 @@ Android-only Kotlin project with a minimal futuristic UI and two peer-to-peer tr
 5. Wait for DataChannel state `OPEN`, then tap **নির্বাচিত ফাইল পাঠান**.
 6. Receiver chooses a destination when prompted.
 
+
+## Mode 3: Windows ↔ Android LAN Share
+- Compatible TCP protocol on port `39471` with the Windows companion project.
+- Both Windows-to-Android and Android-to-Windows file transfers are supported when both devices are on the same Wi-Fi/LAN.
+- In Android, tap **Windows / Mobile LAN Share** and choose either **এই ফোনে ফাইল গ্রহণ চালু করুন** or **Windows/অন্য ফোনের IP-তে সংযোগ করুন**.
+- For Windows → Android: start LAN receiver on Android, then enter the Android phone's LAN IP in the Windows app.
+- For Android → Windows: start the Windows app, then on Android choose connect and enter the Windows PC's LAN IP.
+- Android and Windows both use TCP port `39471`; allow it on Windows Firewall Private networks. Do not expose the port to public networks.
+- LAN mode is different from Wi-Fi Direct and WebRTC QR mode. It requires the same local network/router and does not use cloud or internet relays.
+
 ## Important notes
 - The app does not use a remote file server for either mode.
 - Wi-Fi Direct does not require internet. WebRTC mode is intended for the same Wi-Fi and depends on local host ICE candidates.
 - Android manufacturers and OS versions differ. Wi-Fi Direct support is device-dependent.
-- This project has not been compiled or tested on physical devices in this environment. Build with Android Studio or GitHub Actions and test on two real phones.
+- This project has not been compiled or tested on physical devices in this environment. The Windows↔Android LAN mode is newly added and still needs a real two-device integration test. Build with Android Studio or GitHub Actions and test on two real phones.
 - No app can guarantee that every P2P connection succeeds on every phone/network: Wi-Fi Direct support, Android permission settings, manufacturer behavior, radio interference, and OS restrictions can still prevent connection. If a connection fails, keep Wi-Fi enabled on both phones, keep the app open, disconnect, and rediscover devices.
 - Built-in browser categories include images, videos, audio, documents/other files, Downloads, and installed APKs. Smart Share gives a transfer-method recommendation; transfer history stores the latest 50 send/receive records. A basic storage analyzer reports the Android data-partition totals. The receiver temporarily stores incoming files in app cache before the user chooses a destination. Very large transfers require sufficient free storage.
 - Both transfer modes now compute SHA-256 before sending and verify the received file before accepting it. This detects accidental/corrupt transfer but is not sender authentication. Wi-Fi Direct has no resume support or additional application-layer encryption. WebRTC QR mode is experimental and QR payloads may be too large.

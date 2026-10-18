@@ -2,6 +2,7 @@ package com.rishat.fileshare
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -26,6 +27,7 @@ import android.provider.Settings
 import android.webkit.MimeTypeMap
 import android.view.Gravity
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -230,6 +232,12 @@ class MainActivity : AppCompatActivity() {
             text = "🧩  ইনস্টল করা যেকোনো অ্যাপ শেয়ার করুন"
             isAllCaps = false
             setOnClickListener { showInstalledAppsForSharing() }
+        }, matchWrap(bottom = 8))
+
+        root.addView(Button(this).apply {
+            text = "💻  Windows / Mobile LAN Share"
+            isAllCaps = false
+            setOnClickListener { showLanShareOptions() }
         }, matchWrap(bottom = 8))
 
         root.addView(Button(this).apply {
@@ -556,9 +564,97 @@ class MainActivity : AppCompatActivity() {
         }
         runOnUiThread {
             sendButton.isEnabled = true
-            setStatus("সরাসরি Wi-Fi Direct সংযোগ তৈরি হয়েছে। এখন ফাইল পাঠাতে পারবেন।")
+            setStatus("সরাসরি সংযোগ তৈরি হয়েছে। এখন ফাইল পাঠাতে পারবেন।")
         }
         if (receiverStarted.compareAndSet(false, true)) ioExecutor.execute { readIncomingLoop() }
+    }
+
+
+    /** LAN mode is compatible with the Windows desktop companion using TCP port 39471.
+     * Both devices must be on the same Wi-Fi/LAN; this is separate from Wi-Fi Direct mode.
+     */
+    private fun showLanShareOptions() {
+        val options = arrayOf("এই ফোনে ফাইল গ্রহণ চালু করুন", "Windows/অন্য ফোনের IP-তে সংযোগ করুন", "LAN সংযোগ বন্ধ করুন")
+        AlertDialog.Builder(this)
+            .setTitle("Windows / Mobile LAN Share")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> startLanReceiver()
+                    1 -> promptLanPeerIp()
+                    2 -> disconnectSocketOnly().also { setStatus("LAN সংযোগ বন্ধ করা হয়েছে।") }
+                }
+            }
+            .setNegativeButton("বাতিল", null)
+            .show()
+    }
+
+    private fun startLanReceiver() {
+        if (isConnected) {
+            toast("আগে বর্তমান সংযোগ বিচ্ছিন্ন করুন।")
+            return
+        }
+        if (!acceptStarted.compareAndSet(false, true)) {
+            toast("রিসিভার ইতিমধ্যে চালু আছে।")
+            return
+        }
+        ioExecutor.execute {
+            try {
+                val server = ServerSocket()
+                server.reuseAddress = true
+                server.bind(InetSocketAddress("0.0.0.0", SOCKET_PORT), 1)
+                serverSocket = server
+                setStatus("LAN রিসিভার চালু। এই ফোনের Wi-Fi IP ও port $SOCKET_PORT Windows-এ ব্যবহার করুন।")
+                val client = server.accept()
+                try { server.close() } catch (_: Exception) {}
+                serverSocket = null
+                acceptStarted.set(false)
+                installSocket(client)
+                setStatus("LAN সংযুক্ত। এখন ফাইল গ্রহণ বা পাঠাতে পারবেন।")
+            } catch (e: Exception) {
+                acceptStarted.set(false)
+                if (!isFinishing) setStatus("LAN রিসিভার চালু হয়নি: ${e.message ?: "অজানা সমস্যা"}")
+            }
+        }
+    }
+
+    private fun promptLanPeerIp() {
+        val inputBox = EditText(this).apply {
+            hint = "যেমন: 192.168.1.20"
+            singleLine = true
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+        }
+        AlertDialog.Builder(this)
+            .setTitle("গ্রহণকারী Windows/ফোনের IP")
+            .setMessage("দুই ডিভাইস একই Wi-Fi/LAN-এ থাকতে হবে। গ্রহণকারীর Rishat File Share চালু রাখুন।")
+            .setView(inputBox)
+            .setPositiveButton("সংযোগ") { _, _ -> connectLanPeer(inputBox.text.toString().trim()) }
+            .setNegativeButton("বাতিল", null)
+            .show()
+    }
+
+    private fun connectLanPeer(host: String) {
+        if (host.isBlank()) {
+            toast("IP address লিখুন।")
+            return
+        }
+        if (isConnected || !connectAttempting.compareAndSet(false, true)) {
+            toast("আগে বর্তমান সংযোগ বিচ্ছিন্ন করুন।")
+            return
+        }
+        ioExecutor.execute {
+            try {
+                val client = Socket()
+                client.tcpNoDelay = true
+                client.keepAlive = true
+                client.connect(InetSocketAddress(host, SOCKET_PORT), 8000)
+                connectAttempting.set(false)
+                installSocket(client)
+                setStatus("LAN সংযুক্ত: $host:$SOCKET_PORT — এখন ফাইল পাঠানো ও গ্রহণ করা যাবে।")
+            } catch (e: Exception) {
+                connectAttempting.set(false)
+                setStatus("LAN সংযোগ ব্যর্থ: ${e.message ?: "IP/Firewall পরীক্ষা করুন"}")
+            }
+        }
     }
 
     private fun showFileBrowserCategories() {
