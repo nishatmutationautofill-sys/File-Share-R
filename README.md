@@ -1,62 +1,39 @@
-# Rishat File Share — Wi-Fi Direct + WebRTC QR + Windows/Mobile LAN
+# Rishat File Share v2.0 — Wi-Fi Direct + একই-Wi-Fi P2P
 
-Android-only Kotlin project with a minimal futuristic UI and two peer-to-peer transfer modes.
+ইন্টারনেট বা ক্লাউড ছাড়াই দুই অ্যান্ড্রয়েড ফোনের মধ্যে সরাসরি ফাইল শেয়ার।
 
-## Mode 1: Wi-Fi Direct (Android-to-Android offline)
-- Android Wi-Fi Direct peer discovery and connection.
-- Direct TCP socket between phones; file data streams in 64 KiB blocks.
-- The client retries the local TCP connection for up to about 30 seconds, with TCP keep-alive and no-delay enabled.
-- Does not require a router or internet connection.
-- No cloud upload, file server, STUN, TURN, or relay is used.
+## দুটি সংযোগ-পদ্ধতি, একটিই ইঞ্জিন
+| পদ্ধতি | কখন | কীভাবে খোঁজে |
+|---|---|---|
+| **Wi-Fi Direct** | রাউটার/ইন্টারনেট ছাড়া | অ্যাপ খুললেই স্বয়ংক্রিয় স্ক্যান; নাম চাপলেই আমন্ত্রণ |
+| **একই Wi-Fi / হটস্পট (LAN P2P)** | দুই ফোন একই নেটওয়ার্কে | mDNS/NSD-তে স্বয়ংক্রিয়; না এলে QR বা IP |
 
-## Mode 2: WebRTC DataChannel (same Wi-Fi)
-- Intended for two phones connected to the same local Wi-Fi network.
-- Sender creates an SDP Offer QR; receiver scans it and displays an SDP Answer QR; sender scans the answer.
-- Once the WebRTC DataChannel is open, files are sent directly as binary chunks.
-- No file-upload server or cloud signaling is used. Google public STUN is configured for ICE discovery; no TURN relay is configured. Direct connection still depends on network and device behavior.
-- SDP payloads can be too large for QR codes, and some devices/networks may not establish a connection. This mode is experimental; use Wi-Fi Direct if it fails.
+দুই পদ্ধতিই একই সেশন-ইঞ্জিন ব্যবহার করে (নিচে)।
 
-## Wi-Fi Direct usage
-1. Install the app on both Android phones. Both devices must support Wi-Fi Direct.
-2. Turn on Wi-Fi on both phones; internet/router connection is not required.
-3. Open the app on both phones and grant Nearby Wi-Fi permission (or Location permission on older Android).
-4. Tap **আশেপাশের ফোন খুঁজুন** on one phone, wait for the other phone to appear, then tap its device row.
-5. Wait until direct Wi-Fi Direct connection is ready.
-6. Tap **ফাইল নির্বাচন করে পাঠান**, choose a file, and wait for completion.
-7. The receiving phone shows the received file; tap **ফোনে সংরক্ষণ করুন** to choose its destination.
+## v2-তে কী বদলেছে
+- **WebRTC সরানো হয়েছে**: QR-এ বিশাল SDP আদান-প্রদান অস্থির ছিল। এখন সরাসরি TCP P2P — দ্রুত, ছোট APK (~১৫MB কম), কম ব্যর্থতা।
+- **Wi-Fi Direct ঠিক করা হয়েছে**: ফাইল-পিকার খুললে রিসিভার হারানোর বাগ নেই; BUSY-তে অটো-রিট্রাই; আটকে-থাকা পুরোনো গ্রুপ পরিষ্কার; চ্যানেল হারালে পুনরায় চালু; সংযোগ-টাইমআউট; অটো-রিস্ক্যান।
+- **সরাসরি Download/Rishat File Share-এ সেভ** (আগে cache → আবার কপি, দ্বিগুণ স্টোরেজ লাগত)।
+- **ফোরগ্রাউন্ড সার্ভিস + Wi-Fi/CPU লক**: অ্যাপ ব্যাকগ্রাউন্ডে গেলে বা স্ক্রিন বন্ধ হলেও ট্রান্সফার চলে; নোটিফিকেশনে অগ্রগতি।
+- **মাল্টি-ফাইল, দু-দিকে একসাথে**, লাইভ স্পিড/ETA, প্রতিটি ফাইল বাতিল।
+- **SHA-256 যাচাই** প্রতিটি ফাইলে; হার্টবিট দিয়ে মরা সংযোগ ২০ সেকেন্ডে শনাক্ত।
+- **নিরাপত্তা**: LAN-এ অন্য ফোন যুক্ত হতে চাইলে অনুমতি-ডায়ালগ; QR-এ এককালীন টোকেন (৫ মিনিট); Wi-Fi Direct-এ সিস্টেম নিজেই অনুমতি নেয়।
+- **অন্য অ্যাপ থেকে Share**: গ্যালারি/ফাইল ম্যানেজার থেকে "Share → Rishat File Share"।
+- ডার্ক মোড, Android 15 edge-to-edge, Android 16+ লোকাল-নেটওয়ার্ক পারমিশন, অ্যাডাপ্টিভ আইকন।
 
-## Same-Wi-Fi WebRTC usage
-1. Connect both phones to the same Wi-Fi network.
-2. On the sender phone, tap **একই Wi-Fi-তে WebRTC দিয়ে ফাইল পাঠান**, then **ফাইল পাঠান (Send)** and choose a file. The app creates an Offer QR.
-3. On the receiver phone, open the same WebRTC screen and tap **ফাইল গ্রহণ করুন (Receive)**, then **অফার QR স্ক্যান করুন**.
-4. Receiver displays an Answer QR. On the sender, tap **উত্তর QR স্ক্যান করুন** and scan it.
-5. Wait for DataChannel state `OPEN`, then tap **নির্বাচিত ফাইল পাঠান**.
-6. Receiver chooses a destination when prompted.
+## ব্যবহার
+**Wi-Fi Direct:** দুই ফোনে অ্যাপ খুলুন → Wi-Fi চালু (Android ১২ বা নিচে লোকেশনও) → অন্য ফোনের নাম এলে চাপুন → ওই ফোনে Accept → "ফাইল পাঠান"।
 
+**একই Wi-Fi:** "একই Wi-Fi / হটস্পট" ট্যাব → অন্য ফোন তালিকায় এলে চাপুন (ওই ফোনে অনুমতি দিন)। না এলে একটিতে "আমার QR দেখান", অন্যটিতে "QR স্ক্যান" (অনুমতি ছাড়াই যুক্ত হয়)। শেষ ভরসা: IP ঠিকানা।
 
-## Mode 3: Windows ↔ Android LAN Share
-- Compatible TCP protocol on port `39471` with the Windows companion project.
-- Both Windows-to-Android and Android-to-Windows file transfers are supported when both devices are on the same Wi-Fi/LAN.
-- In Android, tap **Windows / Mobile LAN Share** and choose either **এই ফোনে ফাইল গ্রহণ চালু করুন** or **Windows/অন্য ফোনের IP-তে সংযোগ করুন**.
-- For Windows → Android: start LAN receiver on Android, then enter the Android phone's LAN IP in the Windows app.
-- For Android → Windows: start the Windows app, then on Android choose connect and enter the Windows PC's LAN IP.
-- Android and Windows both use TCP port `39471`; allow it on Windows Firewall Private networks. Do not expose the port to public networks.
-- LAN mode is different from Wi-Fi Direct and WebRTC QR mode. It requires the same local network/router and does not use cloud or internet relays.
+## বিল্ড
+JDK 17 + Android SDK 35 দিয়ে Android Studio-তে `assembleDebug`, অথবা GitHub Actions (`.github/workflows/android.yml`) APK আর্টিফ্যাক্ট দেয়।
 
-## Important notes
-- The app does not use a remote file server for either mode.
-- Wi-Fi Direct does not require internet. WebRTC mode is intended for the same Wi-Fi and depends on local host ICE candidates.
-- Android manufacturers and OS versions differ. Wi-Fi Direct support is device-dependent.
-- This project has not been compiled or tested on physical devices in this environment. The Windows↔Android LAN mode is newly added and still needs a real two-device integration test. Build with Android Studio or GitHub Actions and test on two real phones.
-- No app can guarantee that every P2P connection succeeds on every phone/network: Wi-Fi Direct support, Android permission settings, manufacturer behavior, radio interference, and OS restrictions can still prevent connection. If a connection fails, keep Wi-Fi enabled on both phones, keep the app open, disconnect, and rediscover devices.
-- Built-in browser categories include images, videos, audio, documents/other files, Downloads, and installed APKs. Smart Share gives a transfer-method recommendation; transfer history stores the latest 50 send/receive records. A basic storage analyzer reports the Android data-partition totals. The receiver temporarily stores incoming files in app cache before the user chooses a destination. Very large transfers require sufficient free storage.
-- Both transfer modes now compute SHA-256 before sending and verify the received file before accepting it. This detects accidental/corrupt transfer but is not sender authentication. Wi-Fi Direct has no resume support or additional application-layer encryption. WebRTC QR mode is experimental and QR payloads may be too large.
-- No fixed app-level file-size cap is set in Wi-Fi Direct mode, but actual limits are available storage, OS/provider behavior, and connection stability. WebRTC DataChannel may have message/buffer limits depending on the WebRTC build and device.
-- Preserve Bengali source text as UTF-8/Unicode.
+## আর্কিটেকচার
+`Engine` (অবস্থা/সমন্বয়) → `DirectTransport` (Wi-Fi Direct) / `LanDiscovery` (NSD) → `Session` (ফ্রেম-প্রোটোকল, SHA-256, হার্টবিট) → `Storage` (MediaStore)। `TransferService` প্রসেস বাঁচিয়ে রাখে।
 
-## Build
-Open in Android Studio with JDK 17 and Android SDK 35, then build `app` > `assembleDebug`. GitHub Actions workflow uploads a debug APK artifact.
-
-
-## Build dependency note
-- WebRTC dependency uses `io.github.webrtc-sdk:android:150.7871.01`, which is published on Maven Central; the old `org.webrtc:google-webrtc:1.0.32006` coordinate was hosted on a retired Bintray repository and fails to resolve from Google Maven/Maven Central.
+## সীমাবদ্ধতা (সৎ তথ্য)
+- রেজুম/আংশিক-ট্রান্সফার নেই (ব্যর্থ হলে ফাইল আবার পাঠাতে হয়)।
+- ট্রাফিক এনক্রিপ্টেড নয় (সরাসরি লোকাল লিংক; অনুমতি/টোকেন দিয়ে সুরক্ষিত)।
+- Wi-Fi Direct আচরণ নির্মাতাভেদে ভিন্ন; কিছু রাউটারের "AP/client isolation" LAN মোড আটকায় — তখন Wi-Fi Direct বা হটস্পট ব্যবহার করুন।
+- Android ৮–৯-এ প্রাপ্ত ফাইল অ্যাপের নিজস্ব Download ফোল্ডারে যায়।
