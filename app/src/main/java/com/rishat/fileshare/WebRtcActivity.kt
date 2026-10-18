@@ -36,6 +36,10 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -51,6 +55,10 @@ import kotlin.concurrent.thread
  * if the QR is too large or host candidates are not reachable, use Wi-Fi Direct.
  */
 class WebRtcActivity : AppCompatActivity() {
+    companion object {
+        const val EXTRA_SELECTED_URI = "com.rishat.fileshare.SELECTED_URI"
+        const val EXTRA_SELECTED_NAME = "com.rishat.fileshare.SELECTED_NAME"
+    }
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
     private lateinit var qr: ImageView
@@ -65,6 +73,7 @@ class WebRtcActivity : AppCompatActivity() {
     private var receivedBytes: Long = 0
     private var incomingName = "received_file"
     private var incomingMime = "application/octet-stream"
+    private var incomingExpectedHash = ""
     private val executor = Executors.newSingleThreadExecutor()
     private val filePickerRequest = 1001
     private val saveRequest = 1002
@@ -72,6 +81,7 @@ class WebRtcActivity : AppCompatActivity() {
     private var selectedName: String = "file"
     private var selectedSize: Long = 0L
     private val stopped = AtomicBoolean(false)
+    private val sendStarted = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,7 +90,13 @@ class WebRtcActivity : AppCompatActivity() {
         )
         factory = PeerConnectionFactory.builder().createPeerConnectionFactory()
         buildUi()
-        setStatus("দুই ফোনকে একই Wi-Fi নেটওয়ার্কে যুক্ত করুন। এরপর Send বা Receive নির্বাচন করুন।")
+        val presetUri = intent.getStringExtra(EXTRA_SELECTED_URI)?.let { Uri.parse(it) }
+        if (presetUri != null) {
+            selectedUri = presetUri
+            selectedName = intent.getStringExtra(EXTRA_SELECTED_NAME) ?: queryDisplayName(presetUri) ?: "shared_file"
+            selectedSize = try { contentResolver.openAssetFileDescriptor(presetUri, "r")?.use { it.length } ?: -1L } catch (_: Exception) { -1L }
+            createOffer()
+        } else setStatus("দুই ফোনকে একই Wi-Fi নেটওয়ার্কে যুক্ত করুন। এরপর Send বা Receive নির্বাচন করুন।")
     }
 
     private fun buildUi() {
@@ -108,10 +124,10 @@ class WebRtcActivity : AppCompatActivity() {
         }
         root.addView(subtitle, lp(match = true, height = -2, bottom = 20))
 
-        addButton("১. ফাইল নির্বাচন করে পাঠান") { chooseFile() }
-        addButton("২. QR স্ক্যান করে ফাইল গ্রহণ করুন") { startReceiver(); scanSdp("offer") }
-        addButton("৩. প্রেরক: উত্তর QR স্ক্যান করুন") { scanSdp("answer") }
-        addButton("সংযোগ বন্ধ / নতুন করে শুরু") { closePeer(); qr.visibility = View.GONE; details.text = ""; setStatus("সংযোগ বন্ধ। প্রয়োজন হলে আবার শুরু করুন।") }
+        addButton("📁  ১. ফাইল নির্বাচন করে পাঠান") { chooseFile() }
+        addButton("📷  ২. QR স্ক্যান করে ফাইল গ্রহণ করুন") { startReceiver(); scanSdp("offer") }
+        addButton("🔗  ৩. প্রেরক: উত্তর QR স্ক্যান করুন") { scanSdp("answer") }
+        addButton("⛔  সংযোগ বন্ধ / নতুন করে শুরু") { closePeer(); qr.visibility = View.GONE; details.text = ""; setStatus("সংযোগ বন্ধ। প্রয়োজন হলে আবার শুরু করুন।") }
 
         status = TextView(this).apply {
             textSize = 15f
@@ -142,12 +158,12 @@ class WebRtcActivity : AppCompatActivity() {
                 view.background = GradientDrawable().apply {
                     setColor(0xFFE5F7FF.toInt())
                     setStroke(dp(1), 0xFF91DFF5.toInt())
-                    cornerRadius = dp(14).toFloat()
+                    cornerRadius = dp(2).toFloat()
                 }
                 view.setTextColor(0xFF12304A.toInt())
                 view.textSize = 15f
                 view.setPadding(dp(16), dp(12), dp(16), dp(12))
-                view.minHeight = dp(48)
+                view.minHeight = dp(58)
                 view.elevation = dp(1).toFloat()
             }
             is TextView -> if (view.text.toString() == "Rishat File Share") {
@@ -184,6 +200,7 @@ class WebRtcActivity : AppCompatActivity() {
     }
 
     private fun createOffer() {
+        sendStarted.set(false)
         pendingRole = "sender"
         closePeer()
         createPeer(isSender = true)
@@ -344,8 +361,8 @@ class WebRtcActivity : AppCompatActivity() {
                 val currentState = dc.state()
                 runOnUiThread {
                     setStatus("ডাটা সংযোগ: $currentState")
-                    if (currentState == DataChannel.State.OPEN && pendingRole == "sender" && selectedUri != null) {
-                        // Once the QR handshake succeeds, start sending automatically.
+                    if (currentState == DataChannel.State.OPEN && pendingRole == "sender" && selectedUri != null && sendStarted.compareAndSet(false, true)) {
+                        // Once the QR handshake succeeds, start sending exactly once.
                         sendSelectedFile()
                     }
                 }
@@ -359,12 +376,13 @@ class WebRtcActivity : AppCompatActivity() {
     }
 
     private fun receiveControl(text: String) {
-        // Wire format: META|filename|size|mime ; filenames containing | are sanitized by sender.
-        val parts = text.split("|", limit = 4)
-        if (parts.size >= 4 && parts[0] == "META") {
+        // Wire format: META|filename|size|mime|sha256; filename delimiters are sanitized by sender.
+        val parts = text.split("|", limit = 5)
+        if (parts.size >= 5 && parts[0] == "META") {
             incomingName = parts[1].replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "received_file" }
             expectedBytes = parts[2].toLongOrNull() ?: -1
             incomingMime = parts[3]
+            incomingExpectedHash = parts[4]
             receivedBytes = 0
             incomingFile = File(cacheDir, "incoming_${System.currentTimeMillis()}.part")
             incomingOutput = FileOutputStream(incomingFile!!)
@@ -374,8 +392,23 @@ class WebRtcActivity : AppCompatActivity() {
             incomingOutput?.close()
             incomingOutput = null
             val file = incomingFile ?: return
+            try {
+                val actualHash = sha256File(file)
+                if (incomingExpectedHash.length != 64 || !actualHash.equals(incomingExpectedHash, ignoreCase = true)) {
+                    file.delete()
+                    incomingFile = null
+                    runOnUiThread { setStatus("SHA-256 যাচাই ব্যর্থ। ফাইল বাতিল করা হয়েছে; আবার পাঠান।") }
+                    return
+                }
+            } catch (e: Exception) {
+                file.delete()
+                incomingFile = null
+                runOnUiThread { setStatus("ফাইল যাচাই করা যায়নি: ${e.message}") }
+                return
+            }
+            addTransferHistory("গ্রহণ", incomingName, file.length(), "WebRTC • SHA-256 যাচাই সফল")
             runOnUiThread {
-                setStatus("গ্রহণ সম্পন্ন: $incomingName (${file.length()} bytes)। সংরক্ষণের স্থান নির্বাচন করুন।")
+                setStatus("ফাইল গ্রহণ ও SHA-256 যাচাই সম্পন্ন: $incomingName (${file.length()} bytes)। সংরক্ষণের স্থান নির্বাচন করুন।")
                 val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = incomingMime.ifBlank { "*/*" }
@@ -403,7 +436,9 @@ class WebRtcActivity : AppCompatActivity() {
         thread(name = "rfs-file-sender") {
             try {
                 val mime = contentResolver.getType(uri) ?: "application/octet-stream"
-                val metadata = "META|${selectedName.replace("|", "_")}|$selectedSize|$mime"
+                setStatus("ফাইলের SHA-256 checksum তৈরি হচ্ছে…")
+                val expectedHash = sha256Uri(uri)
+                val metadata = "META|${selectedName.replace("|", "_")}|$selectedSize|$mime|$expectedHash"
                 if (!dc.send(DataChannel.Buffer(ByteBuffer.wrap(metadata.toByteArray(StandardCharsets.UTF_8)), false))) {
                     throw IllegalStateException("Metadata পাঠানো যায়নি")
                 }
@@ -420,11 +455,46 @@ class WebRtcActivity : AppCompatActivity() {
                     }
                 }
                 dc.send(DataChannel.Buffer(ByteBuffer.wrap("DONE".toByteArray(StandardCharsets.UTF_8)), false))
+                addTransferHistory("পাঠানো", selectedName, selectedSize, "WebRTC • SHA-256 checksum পাঠানো হয়েছে")
                 runOnUiThread { setStatus("ফাইল পাঠানো শেষ হয়েছে।") }
             } catch (e: Exception) {
                 runOnUiThread { setStatus("ফাইল পাঠানো ব্যর্থ: ${e.message}") }
             }
         }
+    }
+
+    private fun addTransferHistory(direction: String, name: String, size: Long, result: String) {
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+        val line = "$stamp • $direction • ${name.replace('\n', ' ').take(100)} • ${size.coerceAtLeast(0L)} bytes • $result"
+        val prefs = getSharedPreferences("rishat_transfer", MODE_PRIVATE)
+        val old = prefs.getString("transfer_history", "").orEmpty().lines().filter { it.isNotBlank() }
+        prefs.edit().putString("transfer_history", (listOf(line) + old).take(50).joinToString("\n")).apply()
+    }
+
+    private fun sha256Uri(uri: Uri): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        contentResolver.openInputStream(uri)?.use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        } ?: throw IllegalStateException("ফাইল খোলা যায়নি")
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun sha256File(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun queryDisplayName(uri: Uri): String? {
@@ -448,6 +518,7 @@ class WebRtcActivity : AppCompatActivity() {
     }
 
     private fun closePeer() {
+        sendStarted.set(false)
         try { channel?.unregisterObserver() } catch (_: Exception) {}
         try { channel?.close() } catch (_: Exception) {}
         channel = null

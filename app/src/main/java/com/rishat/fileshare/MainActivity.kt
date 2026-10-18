@@ -17,7 +17,11 @@ import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.StatFs
 import android.provider.OpenableColumns
+import android.provider.MediaStore
+import android.database.Cursor
 import android.provider.Settings
 import android.webkit.MimeTypeMap
 import android.view.Gravity
@@ -37,6 +41,10 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -53,10 +61,12 @@ class MainActivity : AppCompatActivity() {
         private const val REQUEST_PERMISSIONS = 410
         private const val REQUEST_PICK_FILE = 411
         private const val REQUEST_SAVE_FILE = 412
+        private const val REQUEST_BROWSER_PICK_FILE = 414
         private const val SOCKET_PORT = 39471
         private const val BUFFER_SIZE = 64 * 1024
         private const val MAX_NAME_BYTES = 4096
         private const val CMD_FILE = 1
+        private const val HISTORY_KEY = "transfer_history"
     }
 
     private lateinit var manager: WifiP2pManager
@@ -80,6 +90,7 @@ class MainActivity : AppCompatActivity() {
     private val receiverStarted = AtomicBoolean(false)
     private var pendingSaveFile: File? = null
     private val discoveredDevices = linkedMapOf<String, WifiP2pDevice>()
+    private data class BrowserFile(val name: String, val uri: Uri, val size: Long, val mime: String)
 
     private val stateListener = WifiP2pManager.PeerListListener { peers: WifiP2pDeviceList ->
         discoveredDevices.clear()
@@ -162,8 +173,32 @@ class MainActivity : AppCompatActivity() {
             setTextColor(0xFF404A57.toInt())
         }, matchWrap(bottom = 18))
 
+        root.addView(Button(this).apply {
+            text = "📁  বিল্ট-ইন ফাইল ব্রাউজার"
+            isAllCaps = false
+            setOnClickListener { showFileBrowserCategories() }
+        }, matchWrap(bottom = 8))
+
+        root.addView(Button(this).apply {
+            text = "⚡  Smart Share — ফাইল বেছে পাঠান"
+            isAllCaps = false
+            setOnClickListener { chooseFileForSmartShare() }
+        }, matchWrap(bottom = 8))
+
+        root.addView(Button(this).apply {
+            text = "🕘  ট্রান্সফার ইতিহাস"
+            isAllCaps = false
+            setOnClickListener { showTransferHistory() }
+        }, matchWrap(bottom = 8))
+
+        root.addView(Button(this).apply {
+            text = "📊  স্টোরেজ বিশ্লেষণ"
+            isAllCaps = false
+            setOnClickListener { showStorageAnalyzer() }
+        }, matchWrap(bottom = 8))
+
         scanButton = Button(this).apply {
-            text = "আশেপাশের ফোন খুঁজুন"
+            text = "📡  আশেপাশের ফোন খুঁজুন"
             isAllCaps = false
             setOnClickListener { discoverPeers() }
         }
@@ -178,7 +213,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(devicesBox, matchWrap(bottom = 12))
 
         sendButton = Button(this).apply {
-            text = "ফাইল নির্বাচন করে পাঠান"
+            text = "📤  ফাইল নির্বাচন করে পাঠান"
             isAllCaps = false
             isEnabled = false
             setOnClickListener { chooseFile() }
@@ -186,13 +221,19 @@ class MainActivity : AppCompatActivity() {
         root.addView(sendButton, matchWrap(bottom = 8))
 
         root.addView(Button(this).apply {
-            text = "অন্য ফোনে অ্যাপটি শেয়ার করুন (Bluetooth / Wi-Fi)"
+            text = "📦  এই অ্যাপটি শেয়ার করুন (Bluetooth / Wi-Fi)"
             isAllCaps = false
             setOnClickListener { shareInstalledApk() }
         }, matchWrap(bottom = 8))
 
         root.addView(Button(this).apply {
-            text = "একই Wi-Fi-তে WebRTC দিয়ে ফাইল পাঠান"
+            text = "🧩  ইনস্টল করা যেকোনো অ্যাপ শেয়ার করুন"
+            isAllCaps = false
+            setOnClickListener { showInstalledAppsForSharing() }
+        }, matchWrap(bottom = 8))
+
+        root.addView(Button(this).apply {
+            text = "🔗  একই Wi-Fi-তে WebRTC দিয়ে ফাইল পাঠান"
             isAllCaps = false
             setOnClickListener {
                 startActivity(Intent(this@MainActivity, WebRtcActivity::class.java))
@@ -200,7 +241,7 @@ class MainActivity : AppCompatActivity() {
         }, matchWrap(bottom = 8))
 
         root.addView(Button(this).apply {
-            text = "সংযোগ বিচ্ছিন্ন করুন"
+            text = "⛔  সংযোগ বিচ্ছিন্ন করুন"
             isAllCaps = false
             setOnClickListener { disconnect() }
         }, matchWrap(bottom = 8))
@@ -262,18 +303,73 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Lists installed apps and shares the selected app's APK through Android's share sheet. */
+    @Suppress("DEPRECATION")
+    private fun showInstalledAppsForSharing() {
+        try {
+            val pm = packageManager
+            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+                .filter { it.packageName != packageName && it.enabled }
+                .mapNotNull { info ->
+                    try {
+                        val apk = File(info.sourceDir)
+                        if (apk.isFile && apk.length() > 0L) Triple(pm.getApplicationLabel(info).toString(), info, apk) else null
+                    } catch (_: Exception) { null }
+                }
+                .sortedBy { it.first.lowercase() }
+
+            if (apps.isEmpty()) {
+                Toast.makeText(this, "শেয়ার করার মতো ইনস্টল করা অ্যাপ পাওয়া যায়নি।", Toast.LENGTH_LONG).show()
+                return
+            }
+
+            val labels = apps.map { "${it.first}  •  ${formatSize(it.third.length())}" }.toTypedArray()
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("কোন অ্যাপটি শেয়ার করবেন?")
+                .setItems(labels) { _, which -> shareSelectedAppApk(apps[which].first, apps[which].second.packageName, apps[which].third) }
+                .setNegativeButton("বাতিল", null)
+                .show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "অ্যাপের তালিকা খোলা যায়নি: ${e.localizedMessage ?: "অজানা সমস্যা"}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun shareSelectedAppApk(appLabel: String, packageNameToShare: String, sourceApk: File) {
+        try {
+            val shareDir = File(cacheDir, "app-share").apply { mkdirs() }
+            val safeName = appLabel.replace(Regex("[^A-Za-z0-9._-]"), "_").take(60).ifBlank { "Android-App" }
+            val sharedApk = File(shareDir, "$safeName.apk")
+            sourceApk.inputStream().use { input -> sharedApk.outputStream().use { output -> input.copyTo(output) } }
+            val apkUri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", sharedApk)
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/vnd.android.package-archive"
+                putExtra(Intent.EXTRA_STREAM, apkUri)
+                putExtra(Intent.EXTRA_SUBJECT, "$appLabel APK")
+                clipData = android.content.ClipData.newUri(contentResolver, "$appLabel APK", apkUri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(sendIntent, "$appLabel — Bluetooth / Wi-Fi দিয়ে শেয়ার করুন"))
+            val splitCount = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                try { packageManager.getApplicationInfo(packageNameToShare, 0).splitSourceDirs?.size ?: 0 } catch (_: Exception) { 0 }
+            } else 0
+            if (splitCount > 0) Toast.makeText(this, "সতর্কতা: এই অ্যাপে অতিরিক্ত split APK আছে; শুধু base APK দিয়ে অন্য ফোনে ইনস্টল নাও হতে পারে।", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "APK শেয়ার করা যায়নি: ${e.localizedMessage ?: "অজানা সমস্যা"}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun styleUi(view: android.view.View) {
         when (view) {
             is Button -> {
                 view.background = GradientDrawable().apply {
                     setColor(0xFFE5F7FF.toInt())
                     setStroke(dp(1), 0xFF91DFF5.toInt())
-                    cornerRadius = dp(14).toFloat()
+                    cornerRadius = dp(2).toFloat()
                 }
                 view.setTextColor(0xFF12304A.toInt())
                 view.textSize = 15f
                 view.setPadding(dp(16), dp(12), dp(16), dp(12))
-                view.minHeight = dp(48)
+                view.minHeight = dp(58)
                 view.elevation = dp(1).toFloat()
             }
             is TextView -> {
@@ -465,6 +561,217 @@ class MainActivity : AppCompatActivity() {
         if (receiverStarted.compareAndSet(false, true)) ioExecutor.execute { readIncomingLoop() }
     }
 
+    private fun showFileBrowserCategories() {
+        val categories = arrayOf("🖼️  ছবি / Images", "🎬  ভিডিও / Videos", "🎵  অডিও / Audio", "📄  ডকুমেন্ট ও অন্যান্য ফাইল", "⬇️  Downloads / যেকোনো ফাইল", "📦  ইনস্টল করা APK অ্যাপ")
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("বিল্ট-ইন ফাইল ব্রাউজার")
+            .setItems(categories) { _, which ->
+                when (which) {
+                    0 -> showMediaFiles(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*", "ছবি")
+                    1 -> showMediaFiles(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video/*", "ভিডিও")
+                    2 -> showMediaFiles(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio/*", "অডিও")
+                    3 -> showDocumentsPicker()
+                    4 -> showDownloads()
+                    5 -> showInstalledAppsInBrowser()
+                }
+            }
+            .setNegativeButton("বন্ধ", null).show()
+    }
+
+    private fun showDocumentsPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/pdf", "text/*", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.presentationml.presentation"))
+        }
+        startActivityForResult(intent, REQUEST_BROWSER_PICK_FILE)
+    }
+
+    private fun chooseFileForSmartShare() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        startActivityForResult(intent, REQUEST_BROWSER_PICK_FILE)
+    }
+
+    private fun showStorageAnalyzer() {
+        try {
+            val path = Environment.getDataDirectory().path
+            val stat = StatFs(path)
+            val total = stat.blockCountLong * stat.blockSizeLong
+            val available = stat.availableBlocksLong * stat.blockSizeLong
+            val used = (total - available).coerceAtLeast(0L)
+            val percent = if (total > 0L) (used * 100 / total).toInt() else 0
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("স্টোরেজ বিশ্লেষণ")
+                .setMessage("ডিভাইসের ডেটা পার্টিশন\n\nমোট: ${formatSize(total)}\nব্যবহৃত: ${formatSize(used)} ($percent%)\nখালি: ${formatSize(available)}\n\nনোট: Android-এর সিস্টেম পার্টিশন ও অ্যাপ অনুমতির কারণে এটি সম্পূর্ণ মিডিয়া ফাইলের পৃথক হিসাব নয়।")
+                .setPositiveButton("ঠিক আছে", null)
+                .show()
+        } catch (e: Exception) {
+            toast("স্টোরেজ তথ্য পড়া যায়নি: ${e.localizedMessage ?: "অজানা সমস্যা"}")
+        }
+    }
+
+    private fun showTransferHistory() {
+        val history = getSharedPreferences("rishat_transfer", MODE_PRIVATE).getString(HISTORY_KEY, "").orEmpty()
+        val entries = history.lines().filter { it.isNotBlank() }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("ট্রান্সফার ইতিহাস (${entries.size})")
+            .setMessage(if (entries.isEmpty()) "এখনো কোনো ট্রান্সফার হয়নি।" else entries.joinToString("\n\n"))
+            .setPositiveButton("ঠিক আছে", null)
+            .setNeutralButton("ইতিহাস মুছুন") { _, _ ->
+                getSharedPreferences("rishat_transfer", MODE_PRIVATE).edit().remove(HISTORY_KEY).apply()
+                toast("ট্রান্সফার ইতিহাস মুছে ফেলা হয়েছে।")
+            }.show()
+    }
+
+    private fun addHistory(direction: String, name: String, size: Long, result: String) {
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+        val line = "$stamp • $direction • ${name.replace('\n', ' ').take(100)} • ${formatSize(size)} • $result"
+        val prefs = getSharedPreferences("rishat_transfer", MODE_PRIVATE)
+        val old = prefs.getString(HISTORY_KEY, "").orEmpty().lines().filter { it.isNotBlank() }
+        prefs.edit().putString(HISTORY_KEY, (listOf(line) + old).take(50).joinToString("\n")).apply()
+    }
+
+    private fun sha256Uri(uri: Uri): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        contentResolver.openInputStream(uri)?.use { stream ->
+            val buffer = ByteArray(BUFFER_SIZE)
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        } ?: throw IOException("ফাইল খোলা যায়নি")
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun sha256File(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { stream ->
+            val buffer = ByteArray(BUFFER_SIZE)
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun showMediaFiles(collection: Uri, mime: String, heading: String) {
+        val relevantPermission = when {
+            Build.VERSION.SDK_INT >= 33 && mime.startsWith("image/") -> Manifest.permission.READ_MEDIA_IMAGES
+            Build.VERSION.SDK_INT >= 33 && mime.startsWith("audio/") -> Manifest.permission.READ_MEDIA_AUDIO
+            Build.VERSION.SDK_INT >= 33 -> Manifest.permission.READ_MEDIA_VIDEO
+            else -> Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        if (ContextCompat.checkSelfPermission(this, relevantPermission) != PackageManager.PERMISSION_GRANTED) {
+            val permissions = when {
+                Build.VERSION.SDK_INT >= 34 -> arrayOf(
+                    relevantPermission,
+                    "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
+                )
+                Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_AUDIO)
+                else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+            ActivityCompat.requestPermissions(this, permissions, 413)
+            toast("মিডিয়া ফাইল দেখার অনুমতি দিন, তারপর ফাইল ব্রাউজার আবার খুলুন।")
+            return
+        }
+        val files = mutableListOf<BrowserFile>()
+        val projection = arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.MIME_TYPE)
+        try {
+            contentResolver.query(collection, projection, null, null, "${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { cursor ->
+                val nameCol = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                val sizeCol = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                val mimeCol = cursor.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
+                while (cursor.moveToNext()) {
+                    val name = if (nameCol >= 0) cursor.getString(nameCol) ?: "ফাইল" else "ফাইল"
+                    val size = if (sizeCol >= 0) cursor.getLong(sizeCol) else -1L
+                    val type = if (mimeCol >= 0) cursor.getString(mimeCol) ?: mime else mime
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                    files.add(BrowserFile(name, Uri.withAppendedPath(collection, id.toString()), size, type))
+                }
+            }
+        } catch (e: Exception) { toast("ফাইল পড়া যায়নি: ${e.localizedMessage ?: "অনুমতি পরীক্ষা করুন"}"); return }
+        showBrowserFileList(heading, files)
+    }
+
+    private fun showDownloads() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        startActivityForResult(intent, REQUEST_BROWSER_PICK_FILE)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun showInstalledAppsInBrowser() {
+        val files = mutableListOf<BrowserFile>()
+        try {
+            packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
+                .filter { it.enabled }
+                .forEach { info ->
+                    try {
+                        val source = File(info.sourceDir)
+                        if (source.isFile && source.length() > 0L) {
+                            val label = packageManager.getApplicationLabel(info).toString()
+                            val shareDir = File(cacheDir, "app-share").apply { mkdirs() }
+                            val safe = label.replace(Regex("[^A-Za-z0-9._-]"), "_").take(60).ifBlank { "Android-App" }
+                            val copy = File(shareDir, "$safe.apk")
+                            source.inputStream().use { input -> copy.outputStream().use { output -> input.copyTo(output) } }
+                            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fileprovider", copy)
+                            files.add(BrowserFile("📦 $label.apk", uri, copy.length(), "application/vnd.android.package-archive"))
+                        }
+                    } catch (_: Exception) { }
+                }
+        } catch (e: Exception) { toast("অ্যাপের তালিকা পড়া যায়নি: ${e.localizedMessage}"); return }
+        showBrowserFileList("ইনস্টল করা APK", files.sortedBy { it.name.lowercase() })
+    }
+
+    private fun showBrowserFileList(heading: String, files: List<BrowserFile>) {
+        if (files.isEmpty()) { toast("এই বিভাগে কোনো ফাইল পাওয়া যায়নি।"); return }
+        val labels = files.map { "${it.name}\n${formatSize(it.size)}  •  ${it.mime}" }.toTypedArray()
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("$heading — ${files.size}টি")
+            .setItems(labels) { _, index -> showFileActions(files[index]) }
+            .setNegativeButton("পেছনে") { _, _ -> showFileBrowserCategories() }
+            .show()
+    }
+
+    private fun showFileActions(file: BrowserFile) {
+        val recommendation = when {
+            isConnected && file.size >= 50L * 1024 * 1024 -> "পরামর্শ: বড় ফাইলের জন্য সংযুক্ত Wi-Fi Direct ব্যবহার করুন।"
+            isConnected -> "পরামর্শ: Wi-Fi Direct সংযুক্ত আছে; WebRTC-ও আলাদাভাবে চেষ্টা করা যাবে।"
+            file.size >= 50L * 1024 * 1024 -> "পরামর্শ: বড় ফাইলের জন্য আগে Wi-Fi Direct সংযোগ করুন।"
+            else -> "ফাইলের আকার ${formatSize(file.size)}। দুই পদ্ধতির শর্ত দেখে বেছে নিন।"
+        }
+        val actions = arrayOf("📡 Wi-Fi Direct দিয়ে পাঠান", "🔗 WebRTC QR দিয়ে পাঠান")
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("${file.name}\n$recommendation")
+            .setItems(actions) { _, which ->
+                if (which == 0) {
+                    if (!isConnected) {
+                        toast("Wi-Fi Direct পাঠানোর আগে আশেপাশের ফোন খুঁজে সংযোগ করুন।")
+                        return@setItems
+                    }
+                    ioExecutor.execute { sendFile(file.uri) }
+                } else {
+                    try {
+                        startActivity(Intent(this, WebRtcActivity::class.java).apply {
+                            putExtra(WebRtcActivity.EXTRA_SELECTED_URI, file.uri.toString())
+                            putExtra(WebRtcActivity.EXTRA_SELECTED_NAME, file.name)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            clipData = android.content.ClipData.newUri(contentResolver, file.name, file.uri)
+                        })
+                    } catch (e: Exception) { toast("WebRTC খোলা যায়নি: ${e.localizedMessage}") }
+                }
+            }
+            .setNegativeButton("বাতিল", null).show()
+    }
+
     private fun chooseFile() {
         if (!isConnected) {
             toast("আগে অন্য ফোনের সঙ্গে Wi-Fi Direct সংযোগ করুন।")
@@ -483,6 +790,11 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQUEST_PICK_FILE && resultCode == Activity.RESULT_OK) {
             val uri = data?.data ?: return
             ioExecutor.execute { sendFile(uri) }
+        } else if (requestCode == REQUEST_BROWSER_PICK_FILE && resultCode == Activity.RESULT_OK) {
+            val uri = data?.data ?: return
+            val name = queryDisplayName(uri) ?: "selected_file"
+            val size = try { contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L } catch (_: Exception) { -1L }
+            showFileActions(BrowserFile(name, uri, size, contentResolver.getType(uri) ?: "application/octet-stream"))
         } else if (requestCode == REQUEST_SAVE_FILE && resultCode == Activity.RESULT_OK) {
             val destination = data?.data
             val source = pendingSaveFile
@@ -511,10 +823,13 @@ class MainActivity : AppCompatActivity() {
         }
         try {
             val out = output ?: throw IOException("সংযোগ নেই")
+            setStatus("ফাইল যাচাইয়ের checksum তৈরি হচ্ছে: $name")
+            val expectedHash = sha256Uri(uri)
             synchronized(socketLock) {
                 out.writeByte(CMD_FILE)
                 out.writeUTF(name.take(MAX_NAME_BYTES / 2))
                 out.writeLong(size)
+                out.writeUTF(expectedHash)
                 out.flush()
                 var sent = 0L
                 contentResolver.openInputStream(uri)?.use { stream ->
@@ -531,7 +846,8 @@ class MainActivity : AppCompatActivity() {
                     }
                     out.flush()
                 } ?: throw IOException("ফাইল খোলা যায়নি")
-                runOnUiThread { setStatus("পাঠানো শেষ: $name (${formatSize(sent)})") }
+                addHistory("পাঠানো", name, sent, "SHA-256 তৈরি ও পাঠানো সম্পন্ন")
+                runOnUiThread { setStatus("পাঠানো শেষ: $name (${formatSize(sent)}) • SHA-256 যাচাই তথ্য পাঠানো হয়েছে") }
             }
         } catch (e: Exception) {
             runOnUiThread {
@@ -549,7 +865,8 @@ class MainActivity : AppCompatActivity() {
                 if (command != CMD_FILE) throw IOException("অজানা ডেটা কমান্ড")
                 val name = source.readUTF().replace('/', '_').replace('\\', '_').take(200).ifBlank { "received_file" }
                 val size = source.readLong()
-                if (size < 0) throw IOException("ফাইলের আকার ভুল")
+                val expectedHash = source.readUTF()
+                if (size < 0 || expectedHash.length != 64) throw IOException("ফাইলের metadata ভুল")
                 val file = File(cacheDir, "rfs_${System.currentTimeMillis()}_$name")
                 var remaining = size
                 var received = 0L
@@ -568,8 +885,15 @@ class MainActivity : AppCompatActivity() {
                     }
                     fileOut.fd.sync()
                 }
+                val actualHash = sha256File(file)
+                if (!actualHash.equals(expectedHash, ignoreCase = true)) {
+                    file.delete()
+                    addHistory("গ্রহণ", name, size, "Checksum ব্যর্থ — ফাইল বাতিল")
+                    throw IOException("SHA-256 মিলেনি; নিরাপত্তার জন্য ফাইল বাতিল করা হয়েছে")
+                }
+                addHistory("গ্রহণ", name, size, "SHA-256 যাচাই সফল")
                 runOnUiThread {
-                    setStatus("ফাইল গ্রহণ সম্পন্ন: $name (${formatSize(size)})")
+                    setStatus("ফাইল গ্রহণ সম্পন্ন ও SHA-256 যাচাই সফল: $name (${formatSize(size)})")
                     addReceivedFile(name, file)
                 }
             }

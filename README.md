@@ -13,7 +13,7 @@ Android-only Kotlin project with a minimal futuristic UI and two peer-to-peer tr
 - Intended for two phones connected to the same local Wi-Fi network.
 - Sender creates an SDP Offer QR; receiver scans it and displays an SDP Answer QR; sender scans the answer.
 - Once the WebRTC DataChannel is open, files are sent directly as binary chunks.
-- No file-upload server or cloud signaling is used. No STUN/TURN server is configured; this mode relies on reachable local ICE host candidates.
+- No file-upload server or cloud signaling is used. Google public STUN is configured for ICE discovery; no TURN relay is configured. Direct connection still depends on network and device behavior.
 - SDP payloads can be too large for QR codes, and some devices/networks may not establish a connection. This mode is experimental; use Wi-Fi Direct if it fails.
 
 ## Wi-Fi Direct usage
@@ -39,8 +39,8 @@ Android-only Kotlin project with a minimal futuristic UI and two peer-to-peer tr
 - Android manufacturers and OS versions differ. Wi-Fi Direct support is device-dependent.
 - This project has not been compiled or tested on physical devices in this environment. Build with Android Studio or GitHub Actions and test on two real phones.
 - No app can guarantee that every P2P connection succeeds on every phone/network: Wi-Fi Direct support, Android permission settings, manufacturer behavior, radio interference, and OS restrictions can still prevent connection. If a connection fails, keep Wi-Fi enabled on both phones, keep the app open, disconnect, and rediscover devices.
-- The receiver temporarily stores incoming files in app cache before the user chooses a destination. Very large transfers require sufficient free storage.
-- Wi-Fi Direct mode has no resume/retry, checksum, pairing authentication, or additional application-layer encryption. WebRTC QR mode is experimental and QR payloads may be too large.
+- Built-in browser categories include images, videos, audio, documents/other files, Downloads, and installed APKs. Smart Share gives a transfer-method recommendation; transfer history stores the latest 50 send/receive records. A basic storage analyzer reports the Android data-partition totals. The receiver temporarily stores incoming files in app cache before the user chooses a destination. Very large transfers require sufficient free storage.
+- Both transfer modes now compute SHA-256 before sending and verify the received file before accepting it. This detects accidental/corrupt transfer but is not sender authentication. Wi-Fi Direct has no resume support or additional application-layer encryption. WebRTC QR mode is experimental and QR payloads may be too large.
 - No fixed app-level file-size cap is set in Wi-Fi Direct mode, but actual limits are available storage, OS/provider behavior, and connection stability. WebRTC DataChannel may have message/buffer limits depending on the WebRTC build and device.
 - Preserve Bengali source text as UTF-8/Unicode.
 
